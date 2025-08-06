@@ -293,7 +293,7 @@ def generation_loop(
     batch_samples = []
 
     # Load text embeddings with adaptive dtype
-    text_pos_embeds = runner.text_pos_embeds.to(dtype=compute_dtype)
+    text_pos_embeds = torch.load(os.path.join(script_directory, "pos_emb.pt")).to(device, dtype=compute_dtype)
     text_neg_embeds = torch.load(os.path.join(script_directory, "neg_emb.pt")).to(device, dtype=compute_dtype)
     text_embeds = {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
 
