@@ -30,6 +30,7 @@ def flatten(
     return hid, shape
 
 
+@torch.compiler.disable
 def unflatten(
     hid: torch.FloatTensor,  # (L c) or (L ... c)
     hid_shape: torch.LongTensor,  # (b n)
@@ -40,6 +41,7 @@ def unflatten(
     return hid
 
 
+@torch.compiler.disable
 def concat(
     vid: torch.FloatTensor,  # (VL ... c)
     txt: torch.FloatTensor,  # (TL ... c)

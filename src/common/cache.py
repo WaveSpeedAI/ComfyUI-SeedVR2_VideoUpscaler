@@ -13,8 +13,10 @@
 # // limitations under the License.
 
 from typing import Callable
+import torch
 
 
+@torch.compiler.disable
 class Cache:
     """Caching reusable args for faster inference"""
 

@@ -99,7 +99,6 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Move tensors with adaptive dtype (optimized for FP8/FP16/BFloat16)
     noises, aug_noises, cond_latents = _move_to_cuda(noises), _move_to_cuda(aug_noises), _move_to_cuda(cond_latents)
-
     cond_noise_scale = 0.0
 
     def _add_noise(x, aug_noise):

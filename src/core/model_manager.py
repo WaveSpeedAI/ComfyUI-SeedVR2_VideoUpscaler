@@ -40,6 +40,31 @@ from src.optimization.blockswap import apply_block_swap_to_dit
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+import functools
+from xelerate.utils.attributes import multi_recursive_apply
+from xelerate.utils.memory_format import apply_memory_format
+
+
+def convert_pipe_to_memory_format(runner, *, ignores=(), keeps=(), memory_format=torch.preserve_format):
+    if memory_format == torch.preserve_format:
+        return runner
+
+    parts = [
+        "dit",
+        "vae",
+        "transformer",  # for Transformer-based DiffusionPipeline such as DiTPipeline and PixArtAlphaPipeline
+    ]
+    multi_recursive_apply(
+        runner,
+        parts,
+        functools.partial(apply_memory_format, memory_format=memory_format),
+        ignores=ignores,
+        keeps=keeps,
+        verbose=True,
+    )
+    return runner
+
+
 def configure_runner(
     model, base_cache_dir, preserve_vram=False, debug=False, block_swap_config=None, cached_runner=None
 ):
@@ -152,6 +177,7 @@ def configure_runner(
     t = time.time()
     # Create runner
     runner = VideoDiffusionInfer(config, debug)
+
     OmegaConf.set_readonly(runner.config, False)
     # Store model name for cache validation
     runner._model_name = model
@@ -164,9 +190,11 @@ def configure_runner(
     # Configure models
     checkpoint_path = os.path.join(base_cache_dir, f"./{model}")
     t = time.time()
+
     runner = configure_dit_model_inference(
         runner, device, checkpoint_path, config, preserve_vram, model_weight, vram_info, debug, block_swap_config
     )
+
     if debug:
         print(f"🔄 RUNNER : DIT MODEL INFERENCE TIME: {time.time() - t} seconds")
 
@@ -201,6 +229,20 @@ def configure_runner(
     if blockswap_active:
         apply_block_swap_to_dit(runner, block_swap_config)
     # clear_vram_cache()
+
+    from xelerate.compilers.xelerate_compiler import xelerate_compile
+
+    runner = convert_pipe_to_memory_format(
+        runner,
+        memory_format=torch.channels_last,
+    )
+    kwargs = dict(
+        mode="cache-all:max-autotune:low-precision",
+        dynamic=True,
+    )
+    for i in range(len(runner.dit.blocks)):
+        runner.dit.blocks[i] = xelerate_compile(runner.dit.blocks[i], **kwargs)
+    runner.vae = xelerate_compile(runner.vae, **kwargs)
     return runner
 
 
