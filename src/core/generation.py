@@ -17,25 +17,25 @@ Key Features:
 """
 
 import os
-import torch
 import time
-from torchvision.transforms import Compose, Lambda, Normalize
 
+import torch
+from src.common.seed import set_seed
 
 # Import required modules
-from src.optimization.memory_manager import reset_vram_peak
+# from src.optimization.memory_manager import reset_vram_peak
 from src.optimization.performance import (
-    optimized_video_rearrange,
-    optimized_single_video_rearrange,
     optimized_sample_to_image_format,
+    optimized_single_video_rearrange,
+    optimized_video_rearrange,
 )
-from src.common.seed import set_seed
+from torchvision.transforms import Compose, Lambda, Normalize
 
 try:
     import comfy.model_management
 
     COMFYUI_AVAILABLE = True
-except:
+except Exception:
     COMFYUI_AVAILABLE = False
     pass
 # Get script directory for embeddings
@@ -99,6 +99,7 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
 
     # Move tensors with adaptive dtype (optimized for FP8/FP16/BFloat16)
     noises, aug_noises, cond_latents = _move_to_cuda(noises), _move_to_cuda(aug_noises), _move_to_cuda(cond_latents)
+
     cond_noise_scale = 0.0
 
     def _add_noise(x, aug_noise):
@@ -139,11 +140,11 @@ def generation_step(runner, text_embeds_dict, preserve_vram, cond_latents, tempo
     # Process samples with advanced optimization
     samples = optimized_video_rearrange(video_tensors)
     # last_latents = samples[-temporal_overlap:] if temporal_overlap > 0 else samples[-1:]
-    # noises = noises[0].to("cpu")
-    # aug_noises = aug_noises[0].to("cpu")
-    # cond_latents = cond_latents[0].to("cpu")
-    # conditions = conditions[0].to("cpu")
-    # condition = condition.to("cpu")
+    noises = noises[0].to("cpu")
+    aug_noises = aug_noises[0].to("cpu")
+    cond_latents = cond_latents[0].to("cpu")
+    conditions = conditions[0].to("cpu")
+    condition = condition.to("cpu")
 
     return samples  # , last_latents
 
@@ -298,7 +299,7 @@ def generation_loop(
 
     # Standard processing (non-TileVAE) continues below
     # Memory optimization
-    reset_vram_peak()
+    # reset_vram_peak()
 
     # Calculate processing parameters
     step = batch_size - temporal_overlap
@@ -309,6 +310,11 @@ def generation_loop(
     # Calculate total batches for progress reporting
     total_batches = len(range(0, len(images), step))
 
+    # Move images to CPU for memory efficiency
+    # t = time.time()
+    # images = images.to("cpu")
+    # print(f"🔄 Images to CPU time: {time.time() - t} seconds")
+
     # Use existing debugger from runner if available
     debugger = None
     if hasattr(runner, "_blockswap_debugger") and runner._blockswap_debugger is not None:
@@ -316,7 +322,6 @@ def generation_loop(
         debugger.clear_history()
 
     try:
-        runner.vae.to(device)
         # Main processing loop with context awareness
         for batch_count, batch_idx in enumerate(range(0, len(images), step)):
             # Calculate batch indices with overlap
@@ -349,6 +354,9 @@ def generation_loop(
 
             # Apply video transformations with memory optimization
             transformed_video = video_transform(video)
+            del video
+            # video = video.to("cpu")
+            # del video
             ori_lengths = [transformed_video.size(1)]
 
             # Handle correct format: frames % 4 == 1
@@ -365,23 +373,35 @@ def generation_loop(
             # Context-aware temporal strategy
             # First batch: standard complete diffusion
             tps_vae = time.time()
+            runner.vae.to(device)
+            if debug:
+                print(f"🔄 VAE to GPU time: {time.time() - tps_vae} seconds")
+            tps_vae = time.time()
+            if debug:
+                print(f"🔄 VAE dtype: {autocast_dtype}")
             with torch.autocast("cuda", autocast_dtype, enabled=True):
                 cond_latents = runner.vae_encode([transformed_video])
             if debug:
-                print(
-                    f"🔄 VAE encode time: {time.time() - tps_vae} seconds, VAE dtype: {autocast_dtype} Cond latents shape: {cond_latents[0].shape}"
-                )
+                print(f"🔄 VAE encode time: {time.time() - tps_vae} seconds")
+            # tps = time.time()
+            # transformed_video = transformed_video.to("cpu")
+            # print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
+            if debug:
+                print(f"🔄 Cond latents shape: {cond_latents[0].shape}, time: {time.time() - tps_vae} seconds")
 
             # Normal generation
             samples = generation_step(
                 runner, text_embeds, preserve_vram, cond_latents=cond_latents, temporal_overlap=temporal_overlap
             )
-            tps = time.time()
+            # del cond_latents
+            del cond_latents
+
             # Post-process samples
             sample = samples[0]
+            del samples
+            # del samples
             if ori_lengths[0] < sample.shape[0]:
                 sample = sample[: ori_lengths[0]]
-
             # if temporal_overlap > 0 and not is_first_batch and sample.shape[0] > effective_batch_size - temporal_overlap:
             #    sample = sample[temporal_overlap:]  # Remove overlap frames from output
 
@@ -392,24 +412,34 @@ def generation_loop(
                 print(f"🔄 Transformed video to device time: {time.time() - tps} seconds")
 
             input_video = [optimized_single_video_rearrange(transformed_video)]
+            del transformed_video
+            # transformed_video = transformed_video.to("cpu")
+            # del transformed_video
             sample = wavelet_reconstruction(sample, input_video[0][: sample.size(0)])
+            del input_video
 
             # Convert to final image format
             sample = optimized_sample_to_image_format(sample)
             sample = sample.clip(-1, 1).mul_(0.5).add_(0.5)
-            batch_samples.append(sample)
+            sample_cpu = sample.to(torch.float16).to("cpu")
+            del sample
+            batch_samples.append(sample_cpu)
+            # del sample
 
             # Aggressive cleanup after each batch
+            tps = time.time()
             # Progress callback - batch start
             if progress_callback:
                 progress_callback(batch_count + 1, total_batches, current_frames, "Processing batch...")
-
+            # transformed_video = transformed_video.to("cpu")
+            # print(f"🔄 Transformed video to cpu time: {time.time() - tps} seconds")
             if debug:
                 print(f"🔄 Time batch: {time.time() - tps_loop} seconds")
             # Clean VRAM after each batch when preserve_vram is active (but not with blockswap)
             if preserve_vram and not (block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0):
                 torch.cuda.empty_cache()
-
+            # del transformed_video
+            # clear_vram_cache()
             # Log memory state at the end of each batch
             if debugger:
                 debugger.log_memory_state(f"Batch {batch_number} - Memory", show_tensors=False)
@@ -417,6 +447,15 @@ def generation_loop(
     finally:
         if debugger:
             debugger.log("🧹 Generation loop cleanup")
+
+        # Final cleanup of embeddings
+        text_pos_embeds = text_pos_embeds.to("cpu")
+        text_neg_embeds = text_neg_embeds.to("cpu")
+        # runner.dit.to("cpu")
+        # runner.vae.to("cpu")
+        # torch.cuda.empty_cache()
+        # del text_pos_embeds, text_neg_embeds
+        # clear_vram_cache()
 
         # Log final memory state
         if debugger:
@@ -433,7 +472,7 @@ def generation_loop(
         print(f"📊 Total frames: {total_frames}, shape per frame: {H}x{W}x{C}")
 
         # 2. Pré-allouer le tensor final directement sur CPU (évite concatenations)
-        final_video_images = torch.empty((total_frames, H, W, C), dtype=torch.float16, device="cuda")
+        final_video_images = torch.empty((total_frames, H, W, C), dtype=torch.float16)
 
         # 3. Copier par blocs directement dans le tensor final
         block_size = 500
@@ -460,8 +499,7 @@ def generation_loop(
 
             # Copier directement dans le tensor final (pas de concatenation!)
             block_frames = block_result.shape[0]
-            # final_video_images[current_idx:current_idx + block_frames] = block_result.to("cpu")
-            final_video_images[current_idx : current_idx + block_frames] = block_result
+            final_video_images[current_idx : current_idx + block_frames] = block_result.to("cpu")
             current_idx += block_frames
 
             # Nettoyage immédiat VRAM
@@ -473,6 +511,8 @@ def generation_loop(
         print("⚠️ No batch_samples to process")
         final_video_images = torch.empty((0, 0, 0, 0), dtype=torch.float16)
 
+    # Cleanup batch_samples
+    # del batch_samples
     return final_video_images
 
 

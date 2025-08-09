@@ -4,22 +4,23 @@
 
 import os
 import time
-import torch
-from typing import Tuple, Dict, Any
+from typing import Any, Dict, Tuple
 
-from src.utils.downloads import download_weight, get_base_cache_dir
-from src.core.model_manager import configure_runner
-from src.core.generation import generation_loop
-from src.optimization.blockswap import cleanup_blockswap
-from src.optimization.memory_manager import (
-    clear_rope_lru_caches,
-    fast_model_cleanup,
-    fast_ram_cleanup,
-    clear_all_caches,
-)
+import torch
 
 # Import ComfyUI progress reporting
 from server import PromptServer
+from src.core.generation import generation_loop
+from src.core.model_manager import configure_runner
+from src.optimization.blockswap import cleanup_blockswap
+from src.optimization.memory_manager import (
+    clear_all_caches,
+    clear_rope_lru_caches,
+    fast_model_cleanup,
+    fast_ram_cleanup,
+)
+
+from src.utils.downloads import download_weight, get_base_cache_dir
 
 script_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -123,11 +124,11 @@ class SeedVR2:
     ) -> Tuple[torch.Tensor]:
         """Execute SeedVR2 video upscaling with progress reporting"""
 
-        temporal_overlap = 0
+        temporal_overlap = 1
         print(f"🔄 Preparing model: {model}")
 
         download_weight(model)
-        debug = False
+        debug = True
         cfg_scale = 1.0
         try:
             return self._internal_execute(
@@ -274,6 +275,12 @@ class SeedVR2:
         total_start_time = time.time()
 
         # Check if we should use model caching
+        use_cache = (
+            block_swap_config
+            # and block_swap_config.get("blocks_to_swap", 0) > 0
+            and block_swap_config.get("cache_model", False)
+        )
+
         if self.runner is not None:
             current_model = getattr(self.runner, "_model_name", None)
             model_changed = current_model != model
@@ -301,6 +308,7 @@ class SeedVR2:
         )
 
         self.current_model_name = model
+
         if debug:
             print(f"🔄 Runner configuration time: {time.time() - runner_start:.2f}s")
 
@@ -323,9 +331,10 @@ class SeedVR2:
         )
 
         print("✅ Video upscaling completed successfully!")
+        # Cleanup
         print(f"🔄 Total execution time: {time.time() - total_start_time:.2f}s")
-
-        # self.cleanup(force_ram_cleanup=True, keep_model_cached=use_cache, block_swap_config=block_swap_config)
+        if not use_cache or (block_swap_config and block_swap_config.get("blocks_to_swap", 0) > 0):
+            self.cleanup(force_ram_cleanup=True, keep_model_cached=use_cache, block_swap_config=block_swap_config)
         return (sample,)
 
     def _progress_callback(self, batch_idx, total_batches, current_batch_frames, message=""):
@@ -340,7 +349,7 @@ class SeedVR2:
         """Destructor"""
         try:
             self.cleanup(force_ram_cleanup=True, keep_model_cached=False, block_swap_config=None)
-        except:
+        except Exception:
             pass
 
 
